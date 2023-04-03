@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import mesh
 from mesh import Mesh
 import numpy as np
 
@@ -41,5 +42,31 @@ ax0.set_title('Numerical Solution on Unstructured Grid')
 unstructured.plot_true_soln(ax=ax1)
 unstructured.plot_grid(ax=ax1, alpha=0.3)
 ax1.set_title('True Solution on Unstructured Grid')
+
+
+# Random Kappa
+
+structured_aniso = Mesh.create_structured(14, 14, kappa=kappa)
+
+fig, axs = plt.subplots(4, 4, figsize=(12, 12))
+axs = axs.flatten()
+
+for ax in axs:
+    # generate a random linear transform to the input coordinates of opensimplex
+    # this consists of a rotation, scaling, and another rotation
+    theta = np.random.uniform(0, 2 * np.pi)
+    Q = np.array([
+        [np.cos(theta), -np.sin(theta)],
+        [np.sin(theta), np.cos(theta)]
+    ])
+    S = np.diag(np.random.randn(2) * 3.)
+
+    def kappa(x, y):
+        X = np.column_stack((x, y))
+        X = ((Q.T @ S @ Q) @ X.T).T
+        return np.abs(mesh.simplex_noise(X[:,0], X[:,1]))*2. + 1e-1 # we want this strictly positive
+
+    structured_aniso.plot_fn(kappa, ax=ax)
+    structured_aniso.plot_grid(ax=ax, alpha=0.3)
 
 plt.show(block=True)

@@ -4,7 +4,7 @@ RUN apt update && apt upgrade -y
 RUN apt install -y zsh gmsh
 RUN /home/firedrake/firedrake/bin/pip3 install torch
 RUN /home/firedrake/firedrake/bin/pip3 install torch_geometric torch_sparse torch_scatter
-RUN /home/firedrake/firedrake/bin/pip3 install pygmsh shapely meshpy
+RUN /home/firedrake/firedrake/bin/pip3 install pygmsh shapely meshpy opensimplex
 USER firedrake
 RUN sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
 COPY start.sh /home/firedrake/start.sh

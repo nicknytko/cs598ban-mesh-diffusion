@@ -9,6 +9,7 @@ import matplotlib.tri
 import firedrake as fd
 import firedrake.cython.dmcommon as dmcommon
 import pyop2.mpi
+import opensimplex
 
 
 def to_tensor(x):
@@ -38,6 +39,30 @@ def perm_inv(p):
     pinv = torch.ones_like(p)
     pinv[p] = torch.arange(len(pinv))
     return pinv
+
+
+def mesh_to_tensor(M):
+    # flatten the operator and coordinates, giving an (N**2 + N*2,) length tensor
+
+    if isinstance(M, Mesh):
+        return torch.cat((M.A.reshape(-1), M.verts.reshape(-1)))
+    elif isinstance(M, list):
+        data = []
+        for m in M:
+            data.append(mesh_to_tensor(m))
+        return torch.stack(data)
+
+
+def tensor_to_mesh(T, structured):
+    N = structured.A.shape[0]
+
+    A = T[:N**2].reshape(N, N)
+    x = T[N**2:].reshape((N, 2))
+
+    return Mesh(x, None, kappa=structured.kappa, A=A)
+
+
+simplex_noise = np.vectorize(opensimplex.noise2)
 
 
 class Mesh:
@@ -77,9 +102,9 @@ class Mesh:
 
         return A, b
 
-    def __init__(self, verts, edges=None, kappa=None, u=None, f=None):
+    def __init__(self, verts, edges=None, kappa=None, u=None, f=None, A=None, b=None):
         self.kappa = kappa
-        self.verts = to_tensor(verts)
+        self.verts = to_tensor(verts).float()
 
         if u is None:
             u = lambda x, y: x ** 0
@@ -105,10 +130,16 @@ class Mesh:
 
         # Generate PDE operator
         fdrake_mesh = self._firedrake_gen_mesh(self.verts.numpy(), self.edges.numpy())
-        A, b = self._firedrake_assemble_mat(fdrake_mesh, self.kappa, self.f)
-
-        self.A = to_tensor(A.todense()).float()
-        self.b = to_tensor(b).float()
+        if A is None:
+            A, b = self._firedrake_assemble_mat(fdrake_mesh, self.kappa, self.f)
+            self.A = to_tensor(A.todense()).float()
+            self.b = to_tensor(b).float()
+        else:
+            self.A = A
+            if b is None:
+                self.b = torch.ones(self.A.shape[0])
+            else:
+                self.b = b
 
         # Reorder DOF on the linear system because Firedrake mangles the ordering even though we tell it not to
         fdrake_coords = torch.tensor(fdrake_mesh.coordinates.dat.data_ro)
@@ -193,13 +224,20 @@ class Mesh:
 
     ## Perturb the interior points of this mesh to get a new one
 
-    def perturb_points(self, sigma=1e-2):
+    def perturb_points(self, sigma=1e-2, keep_edges=False):
         N = torch.sum(self.interior_verts) # number of interior vertices
 
         new_verts = self.verts.clone()
         new_verts[self.interior_verts, :] += torch.randn(N, 2) * sigma
 
-        return Mesh(new_verts, None, self.kappa, self.u, self.f)
+        return Mesh(new_verts, (self.edges if keep_edges else None), self.kappa, self.u, self.f)
+
+    def diffuse_grid(self, N_T=10, sigma=1e-2, keep_edges=False):
+        # diffuse for N_T timesteps
+        fwd = [self]
+        for i in range(N_T):
+            fwd.append(fwd[-1].perturb_points(sigma, keep_edges))
+        return fwd
 
     ## Interpolate points from another mesh onto this mesh
 
