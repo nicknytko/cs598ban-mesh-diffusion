@@ -6,10 +6,6 @@ import scipy.sparse as sp
 import scipy.spatial as spat
 import matplotlib.pyplot as plt
 import matplotlib.tri
-import firedrake as fd
-import firedrake.cython.dmcommon as dmcommon
-import pyop2.mpi
-import opensimplex
 
 
 def to_tensor(x):
@@ -41,28 +37,89 @@ def perm_inv(p):
     return pinv
 
 
-def mesh_to_tensor(M):
-    # flatten the operator and coordinates, giving an (N**2 + N*2,) length tensor
+def tensor_extract_coordinates(params, T):
+    '''
+    Outputs the coordinate data from a set of tensor-ified data points.
 
-    if isinstance(M, Mesh):
-        return torch.cat((M.A.reshape(-1), M.verts.reshape(-1)))
-    elif isinstance(M, list):
-        data = []
-        for m in M:
-            data.append(mesh_to_tensor(m))
-        return torch.stack(data)
+    Parameters
+    ----------
+    params : tuple
+    T : torch.Tensor
+      (B, N) sized tensor, for B data points and N dimensionality of each data point.  This N is (N_pts * 2 + NNZ).
+
+    Returns
+    -------
+    C : torch.Tensor
+      (B, N_pts, 2) sized tensor containing the data points.
+    '''
+
+    if T.shape == 1:
+        T = torch.unsqueeze(T, 0)
+
+    num_pts = params[0]
+    return T[:, :(num_pts * 2)].reshape(-1, num_pts, 2)
 
 
-def tensor_to_mesh(T, structured):
-    N = structured.A.shape[0]
+def tensor_set_coordinates(params, T, coord_new):
+    '''
+    Updates the coordinate portion of T in place.
 
-    A = T[:N**2].reshape(N, N)
-    x = T[N**2:].reshape((N, 2))
+    Parameters
+    ----------
+    params : tuple
+    T : torch.Tensor
+      (B, N) sized tensor, for B data points and N dimensionality of each data point.  This N is (N_pts * 2 + NNZ).
+    coord_new : torch.Tensor
+      (B, N_pts, 2) sized tensor containing the new data points.
+    '''
 
-    return Mesh(x, None, kappa=structured.kappa, A=A)
+    num_pts = params[0]
+    T[:, :(num_pts * 2)] = coord_new.reshape(T.shape[0], -1)
 
 
-simplex_noise = np.vectorize(opensimplex.noise2)
+def tensor_extract_nonzeros(params, T):
+    '''
+    Outputs the nonzero matrix entries from a set of tensor-ified data points.
+
+    Parameters
+    ----------
+    params : tuple
+    T : torch.Tensor
+      (B, N) sized tensor, for B data points and N dimensionality of each data point.  This N is (N_pts * 2 + NNZ).
+
+    Returns
+    -------
+    C : torch.Tensor
+      (B, nnz) sized tensor containing the nonzero entries of each matrix.
+    '''
+
+    if T.shape == 1:
+        T = torch.unsqueeze(T, 0)
+
+    num_pts = params[0]
+    return T[:, num_pts*2:]
+
+
+def tensor_set_nonzeros(params, T, new_nonzeros):
+    '''
+    Updates the nonzero matrix entries in-place for tensor data T.
+
+    Parameters
+    ----------
+    params : tuple
+    T : torch.Tensor
+      (B, N) sized tensor, for B data points and N dimensionality of each data point.  This N is (N_pts * 2 + NNZ).
+    new_nonzeros : torch.Tensor
+      (B, NNZ) sized tensor containing the new nonzero entries of the matrices.
+
+    Returns
+    -------
+    C : torch.Tensor
+      (B, nnz) sized tensor containing the nonzero entries of each matrix.
+    '''
+
+    num_pts = params[0]
+    T[:, (num_pts * 2):] = new_nonzeros
 
 
 class Mesh:
@@ -70,11 +127,19 @@ class Mesh:
     # as the matrix representing the underlying PDE operator.
 
     def _firedrake_gen_mesh(self, verts, edges):
+        import firedrake as fd
+        import firedrake.cython.dmcommon as dmcommon
+        import pyop2.mpi
+
         comm = pyop2.mpi.dup_comm(fd.COMM_WORLD)
         plex = fd.mesh.plex_from_cell_list(2, np.array(edges), np.array(verts), comm)
         return fd.Mesh(plex, reorder=False)
 
     def _firedrake_assemble_mat(self, mesh, kappa, f, elements='CG', order=1):
+        import firedrake as fd
+        import firedrake.cython.dmcommon as dmcommon
+        import pyop2.mpi
+
         V = fd.FunctionSpace(mesh, elements, order)
         u = fd.TrialFunction(V)
         v = fd.TestFunction(V)
@@ -129,11 +194,31 @@ class Mesh:
         self.interior_verts = torch.logical_not(self.boundary_verts)
 
         # Generate PDE operator
-        fdrake_mesh = self._firedrake_gen_mesh(self.verts.numpy(), self.edges.numpy())
         if A is None:
+            fdrake_mesh = self._firedrake_gen_mesh(self.verts.numpy(), self.edges.numpy())
             A, b = self._firedrake_assemble_mat(fdrake_mesh, self.kappa, self.f)
             self.A = to_tensor(A.todense()).float()
             self.b = to_tensor(b).float()
+
+            # Reorder DOF on the linear system because Firedrake mangles the ordering even though we tell it not to
+            fdrake_coords = torch.tensor(fdrake_mesh.coordinates.dat.data_ro)
+            reg_coord_argsort = coord_lex_argsort(self.verts)
+            fdrake_coord_argsort = coord_lex_argsort(fdrake_coords)
+            fperm = fdrake_coord_argsort[perm_inv(reg_coord_argsort)]
+
+            self.A = self.A[fperm, :][:, fperm]
+            self.b = self.b[fperm]
+
+            # Replace boundary rows/columns with 1 on diagonal, 0 on off-diagonal (identity)
+            # We force the boundary to be 0, so we don't need to solve for it
+            self.A[:, self.boundary_verts] = 0.
+            self.A[self.boundary_verts, :] = 0.
+            self.A[self.boundary_verts, self.boundary_verts] = 1.
+
+            # print('actual nnz', A.nnz, 'dense nnz', np.sum(np.array(A.todense()) != 0))
+            # plt.figure()
+            # plt.spy(self.A)
+            # plt.title('self.A mask')
         else:
             self.A = A
             if b is None:
@@ -141,20 +226,8 @@ class Mesh:
             else:
                 self.b = b
 
-        # Reorder DOF on the linear system because Firedrake mangles the ordering even though we tell it not to
-        fdrake_coords = torch.tensor(fdrake_mesh.coordinates.dat.data_ro)
-        reg_coord_argsort = coord_lex_argsort(self.verts)
-        fdrake_coord_argsort = coord_lex_argsort(fdrake_coords)
-        fperm = fdrake_coord_argsort[perm_inv(reg_coord_argsort)]
-
-        self.A = self.A[fperm, :][:, fperm]
-        self.b = self.b[fperm]
-
-        # Replace boundary rows/columns with 1 on diagonal, 0 on off-diagonal (identity)
-        # We force the boundary to be 0, so we don't need to solve for it
-        self.A[:, self.boundary_verts] = 0.
-        self.A[self.boundary_verts, :] = 0.
-        self.A[self.boundary_verts, self.boundary_verts] = 1.
+    def clone(self):
+        return Mesh(self.verts.clone(), self.edges.clone(), A=self.A.clone(), b=self.b.clone())
 
     # Compute numerical PDE solution
     # This gives numerical values for each vertex.
@@ -208,6 +281,7 @@ class Mesh:
     ## Create a new structured mesh
 
     def create_structured(Nx, Ny, kappa=None, u=None, f=None):
+        assert(Nx == Ny)
         x, y = np.meshgrid(np.linspace(0, 1, Nx),
                            np.linspace(0, 1, Ny))
         x = x.flatten(); y = y.flatten()
@@ -247,3 +321,36 @@ class Mesh:
             interpolator(to_numpy(self.verts[:,0]), to_numpy(self.verts[:,1]))
         ).float()
         return here_vals
+
+    @property
+    def mask(self):
+        #return (self.A != 0)
+        N_1 = int(np.round(self.A.shape[0] ** 0.5))
+        I = torch.eye(N_1)
+        A_1 = torch.diag(torch.ones(N_1), 0) + torch.diag(torch.ones(N_1-1), 1) + torch.diag(torch.ones(N_1-1), -1)
+        mask = torch.kron(I, A_1) + torch.kron(A_1, I) + torch.diag(torch.ones(N_1**2 - N_1 + 1), N_1 - 1) + torch.diag(torch.ones(N_1**2 - N_1+1), -N_1 + 1)
+
+        mask[:, self.boundary_verts] = 0.
+        mask[self.boundary_verts, :] = 0.
+        # ignore the dirichlet boundary points
+
+        # plt.figure()
+        # plt.spy(mask)
+        # plt.title('Reconstructed mask')
+        # plt.show(block=True)
+        return mask != 0.
+
+    @property
+    def nnz(self):
+        return torch.sum(self.mask)
+
+    @property
+    def nonzeros(self):
+        return self.A[self.mask]
+
+    @nonzeros.setter
+    def nonzeros(self, values):
+        self.A[self.mask] = values
+
+    def to_tensor(self):
+        return torch.cat((self.verts.flatten(), self.nonzeros))
