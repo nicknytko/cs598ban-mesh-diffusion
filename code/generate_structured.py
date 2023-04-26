@@ -41,7 +41,7 @@ for i in tqdm(range(num_mesh)):
     M = Mesh.create_structured(Nx, Ny, kappa=kappa)
     # print(M.nonzeros, torch.sum(M.nonzeros != 0), torch.sum(M.A != 0))
     #print('verts', M.verts.shape[0], 'nnz', M.nnz)
-    #data[i] = M.to_tensor()
+    data[i] = M.to_tensor()
 
 torch.save((num_verts, num_nonzeros, N_d), '../data/structured_parameters.pt')
 torch.save(data, '../data/structured_data.pt')
