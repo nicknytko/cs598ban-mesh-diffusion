@@ -122,6 +122,22 @@ def tensor_set_nonzeros(params, T, new_nonzeros):
     T[:, (num_pts * 2):] = new_nonzeros
 
 
+def tensor_combine_data(coordinates, matrix):
+    return torch.cat((coordinates.flatten(1), matrix), dim=1)
+
+
+def mesh_from_tensor(params, t):
+    num_verts, num_nonzeros, N_d = params
+    N = int(np.round(num_verts ** 0.5))
+    M = Mesh.create_structured_dummy(N, N)
+
+    M.verts = t[:num_verts * 2].reshape((num_verts, 2))
+    M.A[M.mask] = t[num_verts * 2:]
+    M.A[torch.triu_indices(N, N, offset=1)] = M.A[torch.tril_indices(N, N, offset=-1)]
+    M.A[M.boundary_verts, M.boundary_verts] = 1.
+    return M
+
+
 class Mesh:
     # Helper class that contains the set of points for a specific mesh, as well
     # as the matrix representing the underlying PDE operator.
@@ -296,6 +312,26 @@ class Mesh:
 
         return Mesh(verts, edges, kappa, u, f)
 
+    def create_structured_dummy(Nx, Ny):
+        assert(Nx == Ny)
+
+        x, y = np.meshgrid(np.linspace(0, 1, Nx),
+                           np.linspace(0, 1, Ny))
+        x = x.flatten(); y = y.flatten()
+        verts = np.column_stack((x, y))
+
+        edges = []
+        for i in range(Nx - 1):
+            for j in range(Ny - 1):
+                edges.append([j*Nx + i, j*Nx + i + 1, (j+1)*Nx + i])
+                edges.append([j*Nx + i + 1, (j+1)*Nx + i + 1, (j+1)*Nx + i])
+        edges = np.array(edges)
+
+        A = torch.zeros((Nx * Ny, Nx * Ny))
+
+        return Mesh(verts, edges, kappa=None, u=None, f=None, A=A)
+
+
     ## Perturb the interior points of this mesh to get a new one
 
     def perturb_points(self, sigma=1e-2, keep_edges=False):
@@ -328,21 +364,18 @@ class Mesh:
         N_1 = int(np.round(self.A.shape[0] ** 0.5))
         I = torch.eye(N_1)
         A_1 = torch.diag(torch.ones(N_1), 0) + torch.diag(torch.ones(N_1-1), 1) + torch.diag(torch.ones(N_1-1), -1)
-        mask = torch.kron(I, A_1) + torch.kron(A_1, I) + torch.diag(torch.ones(N_1**2 - N_1 + 1), N_1 - 1) + torch.diag(torch.ones(N_1**2 - N_1+1), -N_1 + 1)
+        mask = torch.kron(I, A_1) + torch.kron(A_1, I) + torch.diag(torch.ones(N_1**2 - N_1 + 1), N_1 - 1) + torch.diag(torch.ones(N_1**2 - N_1 + 1), -N_1 + 1)
 
         mask[:, self.boundary_verts] = 0.
         mask[self.boundary_verts, :] = 0.
         # ignore the dirichlet boundary points
 
-        # plt.figure()
-        # plt.spy(mask)
-        # plt.title('Reconstructed mask')
-        # plt.show(block=True)
-        return mask != 0.
+        mask_bin = (mask != 0)
+        return torch.where(torch.tril(mask_bin))
 
     @property
     def nnz(self):
-        return torch.sum(self.mask)
+        return self.mask[0].shape[0]
 
     @property
     def nonzeros(self):
