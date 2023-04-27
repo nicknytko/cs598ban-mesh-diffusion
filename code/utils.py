@@ -63,7 +63,7 @@ def extract(a, t, x_shape):
     return out.reshape(batch_size, *((1,) * (len(x_shape) - 1))).to(t.device)
 
 def q_sample(x0, t, noise, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod):
-    # This is a closed form way of output of forward process after t steps purely based off of x0
+    # This is a closed form way to get the output of forward process after t steps purely based off of initial x0
 
     sqrt_alphas_cumprod_t = extract(sqrt_alphas_cumprod, t, x0.shape)
     sqrt_one_minus_alphas_cumprod_t = extract(
@@ -71,3 +71,46 @@ def q_sample(x0, t, noise, sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod):
     )
 
     return sqrt_alphas_cumprod_t * x0 + sqrt_one_minus_alphas_cumprod_t * noise
+
+# @torch.no_grad
+# def p_sample(model, x, t, t_index):
+#     # This allows for sampling in the reverse process from noise to samples
+
+#     betas_t = extract(betas, t, x.shape)
+#     sqrt_one_minus_alphas_cumprod_t = extract(
+#         sqrt_one_minus_alphas_cumprod, t, x.shape
+#     )
+#     sqrt_recip_alphas_t = extract(sqrt_recip_alphas, t, x.shape)
+    
+#     # Equation 11 in the paper
+#     # Use our model (noise predictor) to predict the mean
+#     model_mean = sqrt_recip_alphas_t * (
+#         x - betas_t * model(x, t) / sqrt_one_minus_alphas_cumprod_t
+#     )
+
+#     if t_index == 0:
+#         return model_mean
+#     else:
+#         posterior_variance_t = extract(posterior_variance, t, x.shape)
+#         noise = torch.randn_like(x)
+#         # Algorithm 2 line 4:
+#         return model_mean + torch.sqrt(posterior_variance_t) * noise 
+    
+# # Algorithm 2 (including returning all images)
+# @torch.no_grad
+# def p_sample_loop(model, shape):
+#     device = next(model.parameters()).device
+
+#     b = shape[0]
+#     # start from pure noise (for each example in the batch)
+#     img = torch.randn(shape, device=device)
+#     imgs = []
+
+#     for i in tqdm(reversed(range(0, timesteps)), desc='sampling loop time step', total=timesteps):
+#         img = p_sample(model, img, torch.full((b,), i, device=device, dtype=torch.long), i)
+#         imgs.append(img.cpu().numpy())
+#     return imgs
+
+# @torch.no_grad
+# def sample(model, image_size, batch_size=16, channels=3):
+#     return p_sample_loop(model, shape=(batch_size, channels, image_size, image_size))
