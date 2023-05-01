@@ -3,6 +3,7 @@ import torch.linalg as tla
 import numpy as np
 import numpy.linalg as la
 import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 import scipy.spatial as spat
 import matplotlib.pyplot as plt
 import matplotlib.tri
@@ -231,6 +232,8 @@ class Mesh:
             self.A[self.boundary_verts, :] = 0.
             self.A[self.boundary_verts, self.boundary_verts] = 1.
 
+            self.A_sp = sp.csr_matrix(self.A.numpy())
+
             # print('actual nnz', A.nnz, 'dense nnz', np.sum(np.array(A.todense()) != 0))
             # plt.figure()
             # plt.spy(self.A)
@@ -249,7 +252,8 @@ class Mesh:
     # This gives numerical values for each vertex.
 
     def calc_num_soln(self):
-        return tla.solve(self.A, self.b)
+        #return tla.solve(self.A, self.b)
+        return torch.tensor(spla.spsolve(self.A_sp, self.b.numpy()))
 
     ## Random plotting functions
 
