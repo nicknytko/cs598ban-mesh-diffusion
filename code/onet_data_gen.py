@@ -49,11 +49,15 @@ for i in tqdm(range(num_mesh)):
     data_utrue[i] = eval_u
 
     if i == 0:
-        plt.figure()
+        plt.figure(figsize=(5,5))
         plt.imshow(eval_u)
+        plt.axis('off')
+        plt.savefig('u_true.pdf')
 
-        plt.figure()
+        plt.figure(figsize=(5,5))
         plt.imshow(k_sensor)
+        plt.axis('off')
+        plt.savefig('kappa.pdf')
 
         plt.show(block=True)
 

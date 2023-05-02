@@ -53,8 +53,11 @@ print(ref_lattice.device)
 
 model = Onet(16, N_v).to(device)
 opt = torch.optim.Adam(model.parameters(), lr=1e-4)
-meta_opt = torch.optim.RMSprop([mod_lattice], lr=0.1)
+meta_opt = torch.optim.RMSprop([mod_lattice], lr=0.001)
 batch_size = 128
+
+train_lh = []
+test_lh = []
 
 for i in range(num_outer_epochs):
 
@@ -83,6 +86,7 @@ for i in range(num_outer_epochs):
 
         opt.zero_grad()
         ell.backward()
+        mod_lattice.grad.zero_()
         opt.step()
 
     # --------------------------------------
@@ -118,18 +122,28 @@ for i in range(num_outer_epochs):
     validation_loss = ((u_hat - u_val) ** 2.).mean(dim=1).mean(dim=0)
     print(f"[{i}] Validation loss: {validation_loss.item()}")
 
+    train_lh.append(training_loss.item())
+    test_lh.append(validation_loss.item())
+
     hyper_grads = hypergradient(validation_loss, training_loss, mod_lattice, model.parameters)
 
     # --------------------------------------
     # Take Meta Step to Optimize Sensors
     # --------------------------------------
     meta_opt.zero_grad()
-    ref_lattice.grad = hyper_grads[0]
+    mod_lattice.grad = hyper_grads[0]
     meta_opt.step()
+
+    with torch.no_grad():
+        # clamp sensor points to domain
+        mod_lattice[mod_lattice < 0.] = 0.
+        mod_lattice[mod_lattice > 1.] = 1.
 
 torch.save(model.state_dict(), '../data/trained_onet.pt')
 torch.save(ref_lattice, '../data/ref_lattice.pt')
 torch.save(mod_lattice, '../data/mod_lattice.pt')
+torch.save(torch.Tensor(train_lh), '../data/opt_train_lh.pt')
+torch.save(torch.Tensor(test_lh), '../data/opt_test_lh.pt')
 
 # evalpts = ref_lattice
 # k_img, u_img = test[0]
