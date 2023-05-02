@@ -28,7 +28,7 @@ def approxInverseHVP(v, f, w, i=3, alpha=.1):
 
     return p
 
-device = 'cuda:1' if torch.cuda.is_available() else 'cpu'
+device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
 train = OnetDataset('../data/onet_train.pt')
 test = OnetDataset('../data/onet_test.pt')
@@ -47,12 +47,13 @@ N_v = Nx * Ny
 x, y = torch.meshgrid(torch.linspace(0, 1, Nx), torch.linspace(0, 1, Ny), indexing='ij')
 x = x.flatten().to(device)
 y = y.flatten().to(device)
-ref_lattice = nn.Parameter(torch.column_stack((x, y)).unsqueeze(0))
+ref_lattice = torch.column_stack((x, y)).unsqueeze(0)
+mod_lattice = nn.Parameter(torch.column_stack((x, y)).unsqueeze(0))
 print(ref_lattice.device)
 
 model = Onet(16, N_v).to(device)
 opt = torch.optim.Adam(model.parameters(), lr=1e-4)
-meta_opt = torch.optim.RMSprop([ref_lattice], lr=0.1)
+meta_opt = torch.optim.RMSprop([mod_lattice], lr=0.1)
 batch_size = 128
 
 for i in range(num_outer_epochs):
@@ -70,7 +71,7 @@ for i in range(num_outer_epochs):
         u_img_tr = u_img_tr.to(device)
         # Grab data from the dataset
         evalpts = ref_lattice + torch.rand((batch_size, N_v, 2), device=device) * 1e-2
-        batched_lattice = torch.cat(batch_size*[ref_lattice])
+        batched_lattice = mod_lattice.expand(batch_size, -1, -1)
         k_tr = interp_image(k_img_tr, batched_lattice) # interpolate k at our eval points
         u_tr = interp_image(u_img_tr, evalpts).squeeze() # interpolate true soln at eval pts
 
@@ -87,31 +88,37 @@ for i in range(num_outer_epochs):
     # --------------------------------------
     # Approximating Gradient via IFT
     # --------------------------------------
+    #train loss
     train_batch = torch.randperm(len(train))
     k_img_tr, u_img_tr = train[train_batch]
     k_img_tr = k_img_tr.to(device)
     u_img_tr = u_img_tr.to(device)
-    batched_lattice = torch.cat(len(train)*[ref_lattice])
-    evalpts = batched_lattice + torch.rand((len(train), N_v, 2), device=device) * 1e-2
+
+    evalpts = ref_lattice + torch.rand((len(train), N_v, 2), device=device) * 1e-2
+    batched_lattice = mod_lattice.expand(len(train), -1, -1)
+
     k_tr = interp_image(k_img_tr, batched_lattice) # interpolate k at our eval points
     u_tr = interp_image(u_img_tr, evalpts).squeeze() # interpolate true soln at eval pts
     u_hat = model(k_tr, evalpts)
     training_loss = ((u_hat - u_tr) ** 2.).mean(dim=1).mean(dim=0)
     print(f"[{i}] Training loss: {training_loss.item()}")
 
+    # test loss
     test_batch = torch.randperm(len(test))
     k_img_val, u_img_val = test[test_batch]
     k_img_val = k_img_val.to(device)
     u_img_val = u_img_val.to(device)
-    batched_lattice = torch.cat(len(test)*[ref_lattice])
-    evalpts = batched_lattice + torch.rand((len(test), N_v, 2), device=device) * 1e-2
+
+    evalpts = ref_lattice + torch.rand((len(test), N_v, 2), device=device) * 1e-2
+    batched_lattice = mod_lattice.expand(len(test), -1, -1)
+
     k_val = interp_image(k_img_val, batched_lattice) # interpolate k at our eval points
     u_val = interp_image(u_img_val, evalpts).squeeze() # interpolate true soln at eval pts
     u_hat = model(k_val, evalpts)
     validation_loss = ((u_hat - u_val) ** 2.).mean(dim=1).mean(dim=0)
     print(f"[{i}] Validation loss: {validation_loss.item()}")
 
-    hyper_grads = hypergradient(validation_loss, training_loss, ref_lattice, model.parameters)
+    hyper_grads = hypergradient(validation_loss, training_loss, mod_lattice, model.parameters)
 
     # --------------------------------------
     # Take Meta Step to Optimize Sensors
@@ -122,6 +129,7 @@ for i in range(num_outer_epochs):
 
 torch.save(model.state_dict(), '../data/trained_onet.pt')
 torch.save(ref_lattice, '../data/ref_lattice.pt')
+torch.save(mod_lattice, '../data/mod_lattice.pt')
 
 # evalpts = ref_lattice
 # k_img, u_img = test[0]
