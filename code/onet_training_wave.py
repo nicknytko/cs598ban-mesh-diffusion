@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from onet_model import *
+import matplotlib.pyplot as plt
 
 def hypergradient(validation_loss: torch.Tensor, training_loss: torch.Tensor, lambda_: torch.tensor,
                   w: torch.Generator):
@@ -34,13 +35,16 @@ train = OnetWaveEqnDataset('../data/onet_wave_train.pt')
 test = OnetWaveEqnDataset('../data/onet_wave_test.pt')
 
 num_neumann_steps = 3
-alpha = 0.1
-num_inner_epochs = 50
+alpha = 0.001
+num_inner_epochs = 100
 num_outer_epochs = 200
 
 Nx = 30
 Ny = 30
 N_v = Nx * Ny
+
+ablation = False
+show_plot = False
 
 # Reference lattice gridpoints
 # we will evaluate our model at a small perturbation to these points
@@ -49,15 +53,19 @@ x = x.flatten().to(device)
 y = y.flatten().to(device)
 ref_lattice = torch.column_stack((x, y)).unsqueeze(0)
 mod_lattice = nn.Parameter(torch.column_stack((x, y)).unsqueeze(0))
-print(ref_lattice.device)
 
 model = Onet(2, 16, N_v).to(device)
 opt = torch.optim.Adam(model.parameters(), lr=1e-4)
-meta_opt = torch.optim.RMSprop([mod_lattice], lr=0.001)
+meta_opt = torch.optim.RMSprop([mod_lattice], lr=alpha)
 batch_size = 128
 
 train_lh = []
 test_lh = []
+
+if show_plot:
+    plt.figure(figsize=(6,6))
+    plt.ion()
+    plt.show()
 
 for i in range(num_outer_epochs):
 
@@ -127,22 +135,36 @@ for i in range(num_outer_epochs):
     train_lh.append(training_loss.item())
     test_lh.append(validation_loss.item())
 
-    hyper_grads = hypergradient(validation_loss, training_loss, mod_lattice, model.parameters)
+    if not ablation:
+        hyper_grads = hypergradient(validation_loss, training_loss, mod_lattice, model.parameters)
 
-    # --------------------------------------
-    # Take Meta Step to Optimize Sensors
-    # --------------------------------------
-    meta_opt.zero_grad()
-    mod_lattice.grad = hyper_grads[0]
-    meta_opt.step()
+        # --------------------------------------
+        # Take Meta Step to Optimize Sensors
+        # --------------------------------------
+        meta_opt.zero_grad()
+        mod_lattice.grad = torch.clip(hyper_grads[0], -0.001, 0.001)
+        #mod_lattice.grad = torch.zeros_like(mod_lattice)
+        meta_opt.step()
 
     with torch.no_grad():
         # clamp sensor points to domain
         mod_lattice[mod_lattice < 0.] = 0.
         mod_lattice[mod_lattice > 1.] = 1.
 
-# torch.save(model.state_dict(), '../data/trained_onet.pt')
-# torch.save(ref_lattice, '../data/ref_lattice.pt')
-# torch.save(mod_lattice, '../data/mod_lattice.pt')
-# torch.save(torch.Tensor(train_lh), '../data/opt_train_lh.pt')
-# torch.save(torch.Tensor(test_lh), '../data/opt_test_lh.pt')
+    if show_plot:
+        plt.clf()
+        plt.scatter(ref_lattice.detach().cpu().numpy()[0, :, 0],
+                    ref_lattice.detach().cpu().numpy()[0, :, 1])
+        plt.scatter(mod_lattice.detach().cpu().numpy()[0, :, 0],
+                    mod_lattice.detach().cpu().numpy()[0, :, 1])
+        plt.pause(0.01)
+
+#torch.save(model.state_dict(), '../data/trained_onet.pt')
+if ablation:
+    torch.save(torch.Tensor(train_lh), '../data/reg_wave_train_lh.pt')
+    torch.save(torch.Tensor(test_lh), '../data/reg_wave_test_lh.pt')
+else:
+    torch.save(torch.Tensor(train_lh), '../data/opt_wave_train_lh.pt')
+    torch.save(torch.Tensor(test_lh), '../data/opt_wave_test_lh.pt')
+    torch.save(ref_lattice, '../data/ref_wave_lattice.pt')
+    torch.save(mod_lattice, '../data/mod_wave_lattice.pt')
