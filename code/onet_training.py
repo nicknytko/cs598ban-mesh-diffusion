@@ -51,7 +51,7 @@ ref_lattice = torch.column_stack((x, y)).unsqueeze(0)
 mod_lattice = nn.Parameter(torch.column_stack((x, y)).unsqueeze(0))
 print(ref_lattice.device)
 
-model = Onet(16, N_v).to(device)
+model = Onet(1, 16, N_v).to(device)
 opt = torch.optim.Adam(model.parameters(), lr=1e-4)
 meta_opt = torch.optim.RMSprop([mod_lattice], lr=0.001)
 batch_size = 128

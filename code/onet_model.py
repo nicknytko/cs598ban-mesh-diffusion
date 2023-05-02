@@ -6,7 +6,7 @@ import torch.utils.data
 
 class OnetDataset(torch.utils.data.Dataset):
     def __init__(self,
-                 filename='../data/onet_training.pt'):
+                 filename='../data/onet_train.pt'):
         self.k, self.u = torch.load(filename)
         self.length = self.k.shape[0]
 
@@ -15,6 +15,25 @@ class OnetDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         return (self.k[idx], self.u[idx])
+
+
+class OnetWaveEqnDataset(torch.utils.data.Dataset):
+    def __init__(self,
+                 filename='../data/onet_wave_train.pt'):
+        self.u = torch.load(filename)
+        self.u_len = self.u.shape[1]
+        self.length = self.u.shape[0] * (self.u_len - 2)
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        batch_idx = idx // (self.u_len - 2)
+        sample_idx = idx - (batch_idx * (self.u_len)) + 2
+
+        return (self.u[batch_idx, sample_idx - 2, :, :],
+                self.u[batch_idx, sample_idx - 1, :, :],
+                self.u[batch_idx, sample_idx, :, :])
 
 
 def interp_image(img, pts):
@@ -44,10 +63,10 @@ def interp_image(img, pts):
 
 
 class BranchNet(nn.Module):
-    def __init__(self, H, N_v):
+    def __init__(self, d_in, H, N_v):
         super().__init__()
         self.model = nn.Sequential(
-            nn.Conv1d(1, H, 1), nn.Tanh(),
+            nn.Conv1d(d_in, H, 1), nn.Tanh(),
             nn.Conv1d(H, H, 1), nn.Tanh(),
             nn.Conv1d(H, H, 1), nn.Tanh(),
             nn.Conv1d(H, 1, 1)
@@ -71,10 +90,10 @@ class TrunkNet(nn.Module):
 
 
 class Onet(nn.Module):
-    def __init__(self, H, N_v):
+    def __init__(self, d_in, H, N_v):
         super().__init__()
 
-        self.branch = BranchNet(H, N_v)
+        self.branch = BranchNet(d_in, H, N_v)
         self.trunk = TrunkNet(H, N_v)
 
     def forward(self, kappa_x, y):
